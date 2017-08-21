@@ -61,12 +61,10 @@ def superNormDropLayer(input, name, dropOutRate):
 def superConvLayer(input, name, nNodes=64, kernelSize=1, strides=1,
                    activation="relu", initializers="glorot_uniform", dropOutRate=0.1):
 
-    #print (input._keras_shape[1],input._keras_shape[2],1)
     convLayer=Conv1D(nNodes,
                      kernel_size=kernelSize,
                      strides=strides,
                      kernel_initializer=initializers,
-                     #input_shape=(input._keras_shape[1],input._keras_shape[2],1),
                      activation=activation, name="conv_"+name)(input)
 
     return superNormDropLayer(convLayer, name, dropOutRate)
@@ -98,7 +96,6 @@ def superDenseLayer(input, name, nNodes=64, activation=None,
 
 def innerResidualLayer1D(input, nNodes, nInner, bnFactor, kernel_size, strides, activation, initializers, name):
     nInput=input._keras_shape[2]
-    #print " -> ",nInput, nNodes, nInner
     def unit(x):
         nbp = int(nNodes / bnFactor)
         
@@ -117,10 +114,6 @@ def innerResidualLayer1D(input, nNodes, nInner, bnFactor, kernel_size, strides, 
             
             out = Add()([ident,x])
         else:
-            #x=BatchNormalization(axis=-1)(x)
-            #x=Activation(activation)(x)
-            #ident = x
-
             for i in range(nInner):
                 x=BatchNormalization(axis=-1)(x)
                 x=Activation(activation)(x)
@@ -151,7 +144,6 @@ def ResidualLayer1D(input, name, nNodes=64, nInner=3, nLayers=1,
                   bnFactor=4,
                   kernel_size=1, strides=1, activation="relu",
                     initializers="glorot_uniform", dropOutRate=0.1) :
-
     def unit(x):
         nInput=input._keras_shape[2]
         for i in range(nLayers):
@@ -175,7 +167,6 @@ class BuildCombinationsDim2(Layer):
         self.k = k
         super(BuildCombinationsDim2, self).__init__(**kwargs)
     def build(self, input_shape):
-        #self.input_shape=input_shape
         self.ncr = self.k*factorial(input_shape[2])/factorial(self.k)/factorial(input_shape[2]-self.k)
         self.crmatrix = K.ones(shape=(self.ncr,input_shape[2]))
         nm = np.zeros((self.ncr,input_shape[2]))
@@ -185,7 +176,6 @@ class BuildCombinationsDim2(Layer):
         self.crmatrix = K.transpose(self.crmatrix)
         super(BuildCombinationsDim2, self).build(input_shape)
     def call(self,x):
-        #print "--<>--", K.dot(x,self.crmatrix).get_shape(), x.get_shape(), self.crmatrix.get_shape()
         return K.dot(x,self.crmatrix)
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1],self.ncr)
@@ -193,12 +183,10 @@ class BuildCombinationsDim2(Layer):
     
 class BuildCombinationsDim1():
     def __init__(self,input,k):
-        #print "-->>", input, k
         self.input = input
         self.k = k
         self.perm1 = Permute((2,1))(self.input)
         self.comb = BuildCombinationsDim2(k)(self.perm1)
-        #print "comb ", self.comb.get_shape(), self.comb._keras_shape
         self.perm2 = Permute((2,1))(self.comb)
     def get(self):
         return self.perm2
@@ -221,7 +209,6 @@ class BuildCombinationsDim2AndSum(Layer):
     def call(self,x):
         p = K.dot(x,self.crmatrix)
         p = K.sum(p, axis=2, keepdims=True) #along columns
-        #print p.get_shape()
         return p
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1], 1)
@@ -234,7 +221,6 @@ class BuildCombinations4V():
         self.perm1 = Permute((2,1))(self.input)
         self.comb = BuildCombinationsDim2AndSum(k)(self.perm1)
         self.perm2 = Permute((2,1))(self.comb)
-        #print self.perm2.get_shape()
     def get(self):
         return self.perm2
 
@@ -274,8 +260,6 @@ class GetPtEtaPhiMFrom4V(Layer): #operates over (None, 1, 4)
         rp=tf.div(px, p)
         phi=tf.acos(rp) #0->pi
         phi=tf.where(K.less(0.,py), phi, K.map_fn(lambda x: -x, phi) )
-        #print m.get_shape(), pT.get_shape(), eta.get_shape(), phi.get_shape()
-        #print m.get_shape(), K.concatenate([pT,eta, phi, m]).get_shape()
         
         return K.concatenate([pT, eta, phi, m])
         
@@ -312,7 +296,6 @@ class GetPxPyPzEFrom4V(Layer): #operates over (None, 1, 4)
         E=K.sqrt(K.sum(K.concatenate([p2,m2]),axis=2,keepdims=True))
         
         return K.concatenate([px, py, pz, E])
-
         
     def compute_output_shape(self, input_shape):
         return (input_shape[0],1,4)
@@ -325,7 +308,6 @@ class Sum4V(Layer):
     def build(self, input_shape):
         super(Sum4V, self).build(input_shape)
     def call(self,x):
-        print "sususus ", x.get_shape()
         print x[:,0,:,:]
         return K.sum(x, axis=2, keepdims=True) #along columns
     def compute_output_shape(self, input_shape):
@@ -339,7 +321,6 @@ class SumCombinatorial4VBlocks():
         self.reshape1 = Reshape((nComb,k,4))(input)
         self.sum = Sum4V()(self.reshape1)
         self.reshape2 = Reshape((nComb,4))(self.sum)
-        #print self.perm2.get_shape()
     def get(self):
         return self.reshape2
     
@@ -349,19 +330,17 @@ class Convert4VBlocks():
         self.input = input
         nObj=input._keras_shape[1]
         self.reshape1 = Reshape((nObj,1,4))(input)
-        print "yoyolololo",self.reshape1._keras_shape
         if cartToPEPM:
             self.conv = TimeDistributed(GetPtEtaPhiMFrom4V())(self.reshape1)
         else:
             self.conv = TimeDistributed(GetPxPyPzEFrom4V())(self.reshape1)
         self.reshape2 = Reshape((nObj,4))(self.conv)
-        #print self.perm2.get_shape()
     def get(self):
         return self.reshape2
     
 
 class SortTensor(Layer): #input shape (None, nObjs, nVars)
-    def __init__(self, nc,  **kwargs): #nc: column index for ordering
+    def __init__(self, nc,  **kwargs): #nc: column index used for ordering
         self.nc=nc
         super(SortTensor, self).__init__(**kwargs)
     def build(self, input_shape):
