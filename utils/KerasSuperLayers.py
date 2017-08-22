@@ -1,7 +1,7 @@
 from keras.layers import Conv1D, Dense, Input, Flatten, AveragePooling1D, Activation, Dropout, Merge, LSTM, Add
 from keras.layers.wrappers import TimeDistributed
 from keras.layers.convolutional import Cropping1D, Cropping2D
-from keras.layers.merge import Concatenate
+from keras.layers.merge import Concatenate, Maximum
 from keras.layers.normalization import BatchNormalization
 from keras.layers.pooling import GlobalAveragePooling1D, GlobalMaxPooling1D
 from keras.models import Sequential, Model
@@ -267,7 +267,6 @@ class GetPtEtaPhiMFrom4V(Layer): #operates over (None, 1, 4)
         return (input_shape[0],1,4)
 
 
-
 class GetPxPyPzEFrom4V(Layer): #operates over (None, 1, 4)
     def __init__(self, **kwargs):
         super(GetPxPyPzEFrom4V, self).__init__(**kwargs)
@@ -308,7 +307,7 @@ class Sum4V(Layer):
     def build(self, input_shape):
         super(Sum4V, self).build(input_shape)
     def call(self,x):
-        print x[:,0,:,:]
+        #print x[:,0,:,:]
         return K.sum(x, axis=2, keepdims=True) #along columns
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1], 4)
@@ -337,29 +336,113 @@ class Convert4VBlocks():
         self.reshape2 = Reshape((nObj,4))(self.conv)
     def get(self):
         return self.reshape2
-    
 
-class SortTensor(Layer): #input shape (None, nObjs, nVars)
-    def __init__(self, nc,  **kwargs): #nc: column index used for ordering
-        self.nc=nc
-        super(SortTensor, self).__init__(**kwargs)
+
+class DeltaR(Layer): #operates over (None, 2, 4)
+    def __init__(self, **kwargs):
+        super(DeltaR, self).__init__(**kwargs)
     def build(self, input_shape):
-        super(SortTensor, self).build(input_shape)
+        self.etaMask = K.constant([[0],[1],[0],[0]])
+        self.phiMask = K.constant([[0],[0],[1],[0]])
+        self.v1Mask=K.constant([[1],[0]])
+        self.v2Mask=K.constant([[0],[1]])
+        
+        super(DeltaR, self).build(input_shape)
+    def call(self,x):
+        etas = K.dot(x, self.etaMask)
+        etas = tf.transpose(etas, perm=[0,2,1])
+        phis = K.dot(x, self.phiMask)
+        phis = tf.transpose(phis, perm=[0,2,1])
+
+        eta1 = K.dot(etas, self.v1Mask)
+        phi1 = K.dot(phis, self.v1Mask)
+        eta2 = K.dot(etas, self.v2Mask)
+        phi2 = K.dot(phis, self.v2Mask)
+        
+        phi1=tf.where(K.less(phi1,0.), K.map_fn(lambda x: np.pi*2. + x, phi1 ) , phi1 ) #0->2pi
+        phi2=tf.where(K.less(phi2,0.), K.map_fn(lambda x: np.pi*2. + x, phi2 ) , phi2 ) #0->2pi
+        dphi=tf.subtract(phi1,phi2)
+        dphi=tf.where(K.less(dphi,-np.pi), K.map_fn(lambda x: np.pi*2. + x, dphi ) , dphi )
+        dphi=tf.where(K.less(np.pi,dphi), K.map_fn(lambda x: x-np.pi*2., dphi ) , dphi )
+        
+        deta=tf.subtract(eta1,eta2)
+
+        dphi2=K.square(dphi)
+        deta2=K.square(deta)
+
+        dR=K.sqrt(K.sum(K.concatenate([dphi2,deta2]),axis=2,keepdims=True))
+       
+        return dR
+        
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0],1,1)
+
+
+
+### basic operation functions ===============    
+
+class MaxElement(Layer): #input shape (None, nObjs, 1)
+    def __init__(self, **kwargs):
+        super(MaxElement, self).__init__(**kwargs)
+    def build(self, input_shape):
+        super(MaxElement, self).build(input_shape)
 
     def call(self,x):
+        return tf.reduce_max(x, axis=1, keep_dims=True)
+    
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0],1,input_shape[2])
+
+class MinElement(Layer): #input shape (None, nObjs, 1)
+    def __init__(self, **kwargs):
+        super(MaxElement, self).__init__(**kwargs)
+    def build(self, input_shape):
+        super(MaxElement, self).build(input_shape)
+
+    def call(self,x):
+        return tf.reduce_mamin(x, axis=1, keep_dims=True)
+    
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0],1,input_shape[2])
+
+
+
+class SortTensor(Layer): #input shape (None, nObjs, nVars)
+    def __init__(self, colIdx, sortByClosestValue=False, target=None,  **kwargs): #colIdx: column index used for ordering
+        self.nc=colIdx
+        self.sortByClosestValue=sortByClosestValue
+        self.target=target
+        super(SortTensor, self).__init__(**kwargs)
+    def build(self, input_shape):
+        self.mask=None
+        if self.sortByClosestValue:
+            tmp=np.zeros((input_shape[2],1))
+            tmp[self.nc][0]=1
+            self.mask=K.constant(tmp)
+        super(SortTensor, self).build(input_shape)
+
+    def call(self,x):    
         shape=x._keras_shape
-        
-        idxs=tf.nn.top_k(x[:,:,self.nc], k=shape[-2]).indices
-        idxs=tf.reshape(idxs, (-1, shape[1]) )
-       
+
+        idxs=None
+        if not self.sortByClosestValue:
+            idxs=tf.nn.top_k(x[:,:,self.nc], k=shape[-2]).indices
+            idxs=tf.reshape(idxs, (-1, shape[1]) )
+        else:
+            tmp=K.dot(x,self.mask)
+            tmp=K.map_fn(lambda e: -1*abs(e-self.target), tmp)
+            idxs=tf.nn.top_k(tmp[:,:,0], k=shape[-2]).indices
+            idxs=tf.reshape(idxs, (-1, shape[1]) )
+                    
         b_idxs=tf.scan(lambda a,x: a+1, idxs, np.array([-1]*shape[1]) )
         b_idxs=tf.to_int32(b_idxs)
         
         idxs=tf.stack([b_idxs,idxs],1)
         idxs=tf.transpose(idxs,perm=[0,2,1])
-                
+
+        print idxs.get_shape()
         return tf.gather_nd(x, idxs)
     
     def compute_output_shape(self, input_shape):
-        return (input_shape[0],3,4)
+        return (input_shape[0],input_shape[1],input_shape[2])
 
