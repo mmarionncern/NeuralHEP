@@ -192,6 +192,41 @@ class BuildCombinationsDim1():
         return self.perm2
 
 
+
+
+class BuildSequentialCombinationsDim2(Layer):
+    def __init__(self, k, step, **kwargs):
+        self.k = k
+        self.step= step
+        super(BuildSequentialCombinationsDim2, self).__init__(**kwargs)
+    def build(self, input_shape):
+        self.nCombs=input_shape[2]/self.step
+        self.ncr=self.k*factorial(self.step)/factorial(self.k)/factorial(self.step-self.k)
+        self.crmatrix = K.ones(shape=(self.ncr,input_shape[2]))
+        nm = np.zeros((self.ncr*(input_shape[2]/self.step),input_shape[2]))
+        for s in range(self.nCombs):
+            for i,val in enumerate([x for x in itertools.chain(*itertools.combinations(xrange(self.step),self.k))]): #jet loop
+                nm[i+(s*self.ncr)][val+s*self.step]=1.0
+        self.crmatrix = K.constant(nm)
+        self.crmatrix = K.transpose(self.crmatrix)
+        super(BuildSequentialCombinationsDim2, self).build(input_shape)
+    def call(self,x):
+        return K.dot(x,self.crmatrix)
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0],input_shape[1],self.nCombs*self.ncr)
+
+    
+class BuildSequentialCombinationsDim1():
+    def __init__(self,input,k, step):
+        self.input = input
+        self.k = k
+        self.perm1 = Permute((2,1))(self.input)
+        self.comb = BuildSequentialCombinationsDim2(k, step)(self.perm1)
+        self.perm2 = Permute((2,1))(self.comb)
+    def get(self):
+        return self.perm2
+
+    
     
 class BuildCombinationsDim2AndSum(Layer):
     def __init__(self, k, **kwargs):
@@ -307,7 +342,6 @@ class Sum4V(Layer):
     def build(self, input_shape):
         super(Sum4V, self).build(input_shape)
     def call(self,x):
-        #print x[:,0,:,:]
         return K.sum(x, axis=2, keepdims=True) #along columns
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1], 4)
@@ -380,46 +414,128 @@ class DeltaR(Layer): #operates over (None, 2, 4)
 
 
 ### basic operation functions ===============    
+#replaced by GlobalXXXPooling1D
 
-class MaxElement(Layer): #input shape (None, nObjs, 1)
-    def __init__(self, **kwargs):
-        super(MaxElement, self).__init__(**kwargs)
+#class MaxElement(Layer): #input shape (None, nObjs, 1)
+#    def __init__(self, **kwargs):
+#        super(MaxElement, self).__init__(**kwargs)
+#    def build(self, input_shape):
+#        super(MaxElement, self).build(input_shape)
+#
+#    def call(self,x):
+#        return tf.reduce_max(x, axis=1, keep_dims=True)
+#    
+#    def compute_output_shape(self, input_shape):
+#        return (input_shape[0],1,input_shape[2])
+
+#class MinElement(Layer): #input shape (None, nObjs, 1)
+#    def __init__(self, **kwargs):
+#        super(MinElement, self).__init__(**kwargs)
+#    def build(self, input_shape):
+#        super(MinElement, self).build(input_shape)
+#
+#    def call(self,x):
+#        return tf.reduce_min(x, axis=1, keep_dims=True)
+#    
+#    def compute_output_shape(self, input_shape):
+#        return (input_shape[0],1,input_shape[2])
+    
+#class AverageElement(Layer): #input shape (None, nObjs, 1)
+#    def __init__(self, **kwargs):
+#        super(AverageElement, self).__init__(**kwargs)
+#    def build(self, input_shape):
+#        super(AverageElement, self).build(input_shape)
+#
+#    def call(self,x):
+#        return tf.reduce_mean(x, axis=1, keep_dims=True)
+#    
+#    def compute_output_shape(self, input_shape):
+#        return (input_shape[0],1,input_shape[2])
+
+
+class SequentialReduceOperation(Layer):# input shape (None, nObjs, nVars)
+    def __init__(self, operation, k, **kwargs):
+        self.op=0 if operation=="+" else ( 1 if operation=="avg" else ( 2 if operation=="max" else ( 3 if operation=="min" else ( 4 if operation=="-" else -1 ) ) ) )
+        if self.op==-1:
+            print "Error, sequential reducive operation not defined!"
+            sys.exit(0)
+        self.k=k
+        super(SequentialReduceOperation, self).__init__(**kwargs)
     def build(self, input_shape):
-        super(MaxElement, self).build(input_shape)
+        self.deep=input_shape[2]
+        self.step=input_shape[1]/self.k
+        if input_shape[1]%self.k!=0:
+            print "Error, sequential reducive operation with mismatching number of pairs"
+            sys.exit(0)
+        tmpX=np.zeros((self.k,1))
+        tmpY=np.full((self.k,1),1)
+        tmpX[0][:]=1.
+        tmpY[0][:]=0.
+        self.xMask=K.constant(tmpX)
+        self.yMask=K.constant(tmpY)
+        super(SequentialReduceOperation, self).build(input_shape)
+    def call(self,x):
+        vals=tf.reshape(x,(-1,self.step,self.k, self.deep))
+        if self.op==0: #addition
+            vals=tf.reduce_sum(vals, axis=2)
+        elif self.op==1: #average
+            vals=tf.reduce_mean(vals, axis=2)#
+        elif self.op==2: #maximum
+            vals=tf.reduce_max(vals, axis=2)
+        elif self.op==3: #minimum
+            vals=tf.reduce_min(vals, axis=2)
+        elif self.op==4: #subtraction (first-others)
+            vals = tf.transpose(vals, perm=[0,1,3,2])
+            xVals= K.dot(vals,self.xMask)
+            yVals= K.dot(vals,self.yMask)
+            xVals = tf.transpose(xVals, perm=[0,1,3,2])
+            yVals = tf.transpose(yVals, perm=[0,1,3,2])
+            vals= tf.subtract(xVals,yVals)
+            
+        vals=tf.reshape(vals,(-1,self.step,self.deep))
+        return vals
+    
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0],self.step,input_shape[2])
+
+    
+class SubtractElement(Layer):  #input shape (None, 2, nVars)
+    def __init__(self, **kwargs):
+        super(SubtractElement, self).__init__(**kwargs)
+    def build(self, input_shape):
+        self.xMask=K.constant([[1],[0]])
+        self.yMask=K.constant([[0],[1]])
+        super(SubtractElement, self).build(input_shape)
 
     def call(self,x):
-        return tf.reduce_max(x, axis=1, keep_dims=True)
+        vals = tf.transpose(x, perm=[0,2,1])
+        xVals= K.dot(vals,self.xMask)
+        yVals= K.dot(vals,self.yMask)
+        xVals = tf.transpose(xVals, perm=[0,2,1])
+        yVals = tf.transpose(yVals, perm=[0,2,1])
+        
+        sub= tf.subtract(xVals,yVals)
+
+        return sub
     
     def compute_output_shape(self, input_shape):
         return (input_shape[0],1,input_shape[2])
-
-class MinElement(Layer): #input shape (None, nObjs, 1)
-    def __init__(self, **kwargs):
-        super(MaxElement, self).__init__(**kwargs)
-    def build(self, input_shape):
-        super(MaxElement, self).build(input_shape)
-
-    def call(self,x):
-        return tf.reduce_mamin(x, axis=1, keep_dims=True)
     
-    def compute_output_shape(self, input_shape):
-        return (input_shape[0],1,input_shape[2])
 
-
-
-class SortTensor(Layer): #input shape (None, nObjs, nVars)
-    def __init__(self, colIdx, sortByClosestValue=False, target=None,  **kwargs): #colIdx: column index used for ordering
+class Sort(Layer): #input shape (None, nObjs, nVars)
+    def __init__(self, colIdx, reverse=False, sortByClosestValue=False, target=None,  **kwargs): #colIdx: column index used for ordering
         self.nc=colIdx
         self.sortByClosestValue=sortByClosestValue
         self.target=target
-        super(SortTensor, self).__init__(**kwargs)
+        self.reverse=reverse
+        super(Sort, self).__init__(**kwargs)
     def build(self, input_shape):
         self.mask=None
         if self.sortByClosestValue:
             tmp=np.zeros((input_shape[2],1))
             tmp[self.nc][0]=1
             self.mask=K.constant(tmp)
-        super(SortTensor, self).build(input_shape)
+        super(Sort, self).build(input_shape)
 
     def call(self,x):    
         shape=x._keras_shape
@@ -439,10 +555,64 @@ class SortTensor(Layer): #input shape (None, nObjs, nVars)
         
         idxs=tf.stack([b_idxs,idxs],1)
         idxs=tf.transpose(idxs,perm=[0,2,1])
-
-        print idxs.get_shape()
+        if self.reverse:
+            idxs=tf.reverse(idxs,[1])
+        
         return tf.gather_nd(x, idxs)
     
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0],input_shape[1],input_shape[2])
+
+
+class SequentialSort(Layer):# input shape (None, nObjs, nVars)
+    def __init__(self, k, colIdx, reverse=False, sortByClosestValue=False, target=None, **kwargs):
+        self.k=k
+        self.nc=colIdx
+        self.sortByClosestValue=sortByClosestValue
+        self.target=target
+        self.reverse=reverse
+        super(SequentialSort, self).__init__(**kwargs)
+    def build(self, input_shape):
+        self.deep=input_shape[2]
+        self.step=input_shape[1]/self.k
+        if input_shape[1]%self.k!=0:
+            print "Error, sequential sort with mismatching number of pairs"
+            sys.exit(0)
+        tmpOffsets=np.zeros((input_shape[1]))
+        for i in range(input_shape[1]):
+            tmpOffsets[i]=(int(i/2))*2
+        self.offsets=tf.to_int32(K.constant(tmpOffsets))      
+        self.mask=None
+        if self.sortByClosestValue:
+            tmp=np.zeros((input_shape[2],1))
+            tmp[self.nc][0]=1
+            self.mask=K.constant(tmp)
+        super(SequentialSort, self).build(input_shape)
+    def call(self,x):
+        shape=x._keras_shape
+        vals=tf.reshape(x,(-1,self.step,self.k, self.deep))
+        idxs=None
+        if not self.sortByClosestValue:
+            idxs=tf.nn.top_k(vals[:,:,:,self.nc], k=self.k).indices
+            if self.reverse:
+                idxs=tf.reverse(idxs,[2])
+            idxs=tf.reshape(idxs, (-1, shape[1]) )
+        else:
+            tmp=K.dot(vals,self.mask)
+            tmp=K.map_fn(lambda e: -1*abs(e-self.target), tmp)
+            idxs=tf.nn.top_k(tmp[:,:,:,0], k=self.k).indices
+            if self.reverse:
+                idxs=tf.reverse(idxs,[2])
+            idxs=tf.reshape(idxs, (-1, shape[1]) )
+
+        idxs=tf.add(idxs,self.offsets)
+        b_idxs=tf.scan(lambda a,x: a+1, idxs, np.array([-1]*shape[1]) )
+        b_idxs=tf.to_int32(b_idxs)
+        idxs=tf.stack([b_idxs,idxs],1)
+        idxs=tf.transpose(idxs,perm=[0,2,1])
+
+        return tf.gather_nd(vals, idxs)
+
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1],input_shape[2])
 
