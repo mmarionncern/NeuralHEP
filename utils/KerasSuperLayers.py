@@ -1,9 +1,10 @@
 from keras.layers import Conv1D, Dense, Input, Flatten, AveragePooling1D, Activation, Dropout, Merge, LSTM, Add
 from keras.layers.wrappers import TimeDistributed
-from keras.layers.convolutional import Cropping1D, Cropping2D
+from keras.layers.convolutional import Cropping1D, Cropping2D,UpSampling1D
 from keras.layers.merge import Concatenate, Maximum
 from keras.layers.normalization import BatchNormalization
 from keras.layers.pooling import GlobalAveragePooling1D, GlobalMaxPooling1D
+from keras.layers.core import RepeatVector
 from keras.models import Sequential, Model
 from keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from keras import backend as K
@@ -41,6 +42,19 @@ def cropData(input,ymin,ymax=-1,xmin=-1,xmax=-1):
     return xCropped
 
 
+def cropData2D(input,ymin,ymax=-1,xmin=-1,xmax=-1):
+
+    nY=input._keras_shape[1]
+    nX=input._keras_shape[2]
+    if ymax==-1:
+        ymax=nY-1
+    if xmin==-1:
+        xmin=0
+    if xmax==-1:
+        xmax=nX-1
+    cropped=Cropping2D(cropping=((ymin,nY-ymax-1),(xmin,nX-xmax-1)))(input)
+    return cropped
+
 
 
 
@@ -72,11 +86,12 @@ def superConvLayer(input, name, nNodes=64, kernelSize=1, strides=1,
 
 
 def superLSTMLayer(input, name, nNodes=64, activation="tanh",
-                   initializers="glorot_uniform", dropOutRate=0.1):
+                   initializers="glorot_uniform",return_sequence=False, dropOutRate=0.1):
 
     lstmLayer=LSTM(nNodes,
                    name="lstm_"+name,
                    activation=activation,
+                   return_sequences=return_sequence,
                    kernel_initializer=initializers)(input)
 
     return superNormDropLayer(lstmLayer, name, dropOutRate)
@@ -372,7 +387,9 @@ class Convert4VBlocks():
         return self.reshape2
 
 
-class DeltaR(Layer): #operates over (None, 2, 4)
+class DeltaR(Layer):
+    #operates over (None, nObjs, 4)
+    #perform a dR computation between each pair : (1,2) (3,4) etc.
     def __init__(self, **kwargs):
         super(DeltaR, self).__init__(**kwargs)
     def build(self, input_shape):
@@ -380,13 +397,16 @@ class DeltaR(Layer): #operates over (None, 2, 4)
         self.phiMask = K.constant([[0],[0],[1],[0]])
         self.v1Mask=K.constant([[1],[0]])
         self.v2Mask=K.constant([[0],[1]])
-        
+        self.nCombs=input_shape[1]/2
         super(DeltaR, self).build(input_shape)
     def call(self,x):
-        etas = K.dot(x, self.etaMask)
-        etas = tf.transpose(etas, perm=[0,2,1])
-        phis = K.dot(x, self.phiMask)
-        phis = tf.transpose(phis, perm=[0,2,1])
+        vals=tf.reshape(x,(-1,self.nCombs,2,4))
+        etas = K.dot(vals, self.etaMask)
+        #etas = tf.transpose(etas, perm=[0,2,1])
+        etas = tf.transpose(etas, perm=[0,1,3,2])
+        phis = K.dot(vals, self.phiMask)
+        #phis = tf.transpose(phis, perm=[0,2,1])
+        phis = tf.transpose(phis, perm=[0,1,3,2])
 
         eta1 = K.dot(etas, self.v1Mask)
         phi1 = K.dot(phis, self.v1Mask)
@@ -404,13 +424,13 @@ class DeltaR(Layer): #operates over (None, 2, 4)
         dphi2=K.square(dphi)
         deta2=K.square(deta)
 
-        dR=K.sqrt(K.sum(K.concatenate([dphi2,deta2]),axis=2,keepdims=True))
-       
+        dR=K.sqrt(K.sum(K.concatenate([dphi2,deta2]),axis=3,keepdims=True))
+        dR=tf.reshape(dR,(-1,self.nCombs,1))
+        
         return dR
         
     def compute_output_shape(self, input_shape):
-        return (input_shape[0],1,1)
-
+        return (input_shape[0],self.nCombs,1)
 
 
 ### basic operation functions ===============    
@@ -455,7 +475,7 @@ class DeltaR(Layer): #operates over (None, 2, 4)
 
 class SequentialReduceOperation(Layer):# input shape (None, nObjs, nVars)
     def __init__(self, operation, k, **kwargs):
-        self.op=0 if operation=="+" else ( 1 if operation=="avg" else ( 2 if operation=="max" else ( 3 if operation=="min" else ( 4 if operation=="-" else -1 ) ) ) )
+        self.op=0 if operation=="+" else ( 1 if operation=="avg" else ( 2 if operation=="max" else ( 3 if operation=="min" else ( 4 if operation=="-" else ( 5 if operation=="-abs" else -1 ) ) ) ) )
         if self.op==-1:
             print "Error, sequential reducive operation not defined!"
             sys.exit(0)
@@ -484,13 +504,16 @@ class SequentialReduceOperation(Layer):# input shape (None, nObjs, nVars)
             vals=tf.reduce_max(vals, axis=2)
         elif self.op==3: #minimum
             vals=tf.reduce_min(vals, axis=2)
-        elif self.op==4: #subtraction (first-others)
+        elif self.op==4 or self.op==5: #subtraction (first-others)
             vals = tf.transpose(vals, perm=[0,1,3,2])
             xVals= K.dot(vals,self.xMask)
             yVals= K.dot(vals,self.yMask)
             xVals = tf.transpose(xVals, perm=[0,1,3,2])
             yVals = tf.transpose(yVals, perm=[0,1,3,2])
             vals= tf.subtract(xVals,yVals)
+
+            if self.op==5:
+                vals=tf.abs(vals)
             
         vals=tf.reshape(vals,(-1,self.step,self.deep))
         return vals
@@ -523,7 +546,7 @@ class SubtractElement(Layer):  #input shape (None, 2, nVars)
     
 
 class Sort(Layer): #input shape (None, nObjs, nVars)
-    def __init__(self, colIdx, reverse=False, sortByClosestValue=False, target=None,  **kwargs): #colIdx: column index used for ordering
+    def __init__(self, colIdx, reverse=False, sortByClosestValue=False, target=None,  **kwargs): #colIdx: column index used for ordering. if reverse, from smaller to larger value
         self.nc=colIdx
         self.sortByClosestValue=sortByClosestValue
         self.target=target
@@ -557,7 +580,7 @@ class Sort(Layer): #input shape (None, nObjs, nVars)
         idxs=tf.transpose(idxs,perm=[0,2,1])
         if self.reverse:
             idxs=tf.reverse(idxs,[1])
-        
+
         return tf.gather_nd(x, idxs)
     
     def compute_output_shape(self, input_shape):
@@ -580,7 +603,7 @@ class SequentialSort(Layer):# input shape (None, nObjs, nVars)
             sys.exit(0)
         tmpOffsets=np.zeros((input_shape[1]))
         for i in range(input_shape[1]):
-            tmpOffsets[i]=(int(i/2))*2
+            tmpOffsets[i]=(int(i/self.k))*self.k
         self.offsets=tf.to_int32(K.constant(tmpOffsets))      
         self.mask=None
         if self.sortByClosestValue:
@@ -611,7 +634,7 @@ class SequentialSort(Layer):# input shape (None, nObjs, nVars)
         idxs=tf.stack([b_idxs,idxs],1)
         idxs=tf.transpose(idxs,perm=[0,2,1])
 
-        return tf.gather_nd(vals, idxs)
+        return tf.gather_nd(x, idxs)
 
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1],input_shape[2])
