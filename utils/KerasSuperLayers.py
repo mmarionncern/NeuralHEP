@@ -12,14 +12,15 @@ from keras.engine.topology import Layer
 from keras.layers import Permute
 from keras.layers.core import Lambda, Reshape
 from keras.utils import conv_utils
+from keras.backend import int_shape
 from math import factorial
 import tensorflow as tf
 import itertools
 import numpy as np
-import pandas
+#import pandas
 import random
 import sys
-import ROOT
+#import ROOT
 np.set_printoptions(precision=2)
 np.set_printoptions(suppress=True)
 
@@ -33,7 +34,7 @@ def cropData(input,ymin,ymax=-1,xmin=-1,xmax=-1):
     yCropped=Cropping1D((ymin,nY-ymax-1))(input)
 
     if (xmin==-1 and xmax!=-1) or (xmin!=-1 and xmax==-1):
-        print "no cropping along the x axis, check the details"
+        print("no cropping along the x axis, check the details")
         return yCropped
     if xmin==-1 and xmax==-1:
         return yCropped
@@ -75,7 +76,7 @@ def superNormDropLayer(input, name, dropOutRate):
 def superConvLayer(input, name, nNodes=64, kernelSize=1, strides=1,
                    activation="relu", initializers="glorot_uniform", dropOutRate=0.1):
 
-    convLayer=Conv1D(nNodes,
+    convLayer=Conv1D(int(nNodes),
                      kernel_size=kernelSize,
                      strides=strides,
                      kernel_initializer=initializers,
@@ -88,7 +89,7 @@ def superConvLayer(input, name, nNodes=64, kernelSize=1, strides=1,
 def superLSTMLayer(input, name, nNodes=64, activation="tanh",
                    initializers="glorot_uniform",return_sequence=False, dropOutRate=0.1):
 
-    lstmLayer=LSTM(nNodes,
+    lstmLayer=LSTM(int(nNodes),
                    name="lstm_"+name,
                    activation=activation,
                    return_sequences=return_sequence,
@@ -98,11 +99,12 @@ def superLSTMLayer(input, name, nNodes=64, activation="tanh",
 
 
 def superDenseLayer(input, name, nNodes=64, activation=None,
-                    initializers="glorot_uniform", dropOutRate=0.1):
+                    initializers="glorot_uniform", dropOutRate=0.1):#, input_dim=None):
 
-    denseLayer=Dense(nNodes,
+    denseLayer=Dense(int(nNodes),
                      name="dense_"+name,
                      activation=activation,
+                     #input_dim=input_dim,
                      kernel_initializer=initializers)(input)
 
     return superNormDropLayer(denseLayer, name, dropOutRate)
@@ -180,12 +182,14 @@ def ResidualLayer1D(input, name, nNodes=64, nInner=3, nLayers=1,
 class BuildCombinationsDim2(Layer):
     def __init__(self, k, **kwargs):
         self.k = k
+        #self.ncr=None
+        #self.crmatrix=None
         super(BuildCombinationsDim2, self).__init__(**kwargs)
     def build(self, input_shape):
         self.ncr = self.k*factorial(input_shape[2])/factorial(self.k)/factorial(input_shape[2]-self.k)
         self.crmatrix = K.ones(shape=(self.ncr,input_shape[2]))
         nm = np.zeros((self.ncr,input_shape[2]))
-        for i,val in enumerate([x for x in itertools.chain(*itertools.combinations(xrange(input_shape[2]),self.k))]): #jet loop
+        for i,val in enumerate([x for x in itertools.chain(*itertools.combinations(range(input_shape[2]),self.k))]): #jet loop
             nm[i][val]=1.0
         self.crmatrix = K.constant(nm)
         self.crmatrix = K.transpose(self.crmatrix)
@@ -194,7 +198,14 @@ class BuildCombinationsDim2(Layer):
         return K.dot(x,self.crmatrix)
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1],self.ncr)
-
+    def get_config(self):
+        config = {
+            'k':self.k,
+        #    'ncr':self.ncr,
+        #    'crmatrix':self.crmatrix
+        }
+        base_config = super(BuildCombinationsDim2, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
     
 class BuildCombinationsDim1():
     def __init__(self,input,k):
@@ -205,7 +216,12 @@ class BuildCombinationsDim1():
         self.perm2 = Permute((2,1))(self.comb)
     def get(self):
         return self.perm2
-
+    def get_config(self):
+        config = {
+            'k':self.k,
+        }
+        base_config = super(BuildCombinationsDim1, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
 
 
 
@@ -219,8 +235,8 @@ class BuildSequentialCombinationsDim2(Layer):
         self.ncr=self.k*factorial(self.step)/factorial(self.k)/factorial(self.step-self.k)
         self.crmatrix = K.ones(shape=(self.ncr,input_shape[2]))
         nm = np.zeros((self.ncr*(input_shape[2]/self.step),input_shape[2]))
-        for s in range(self.nCombs):
-            for i,val in enumerate([x for x in itertools.chain(*itertools.combinations(xrange(self.step),self.k))]): #jet loop
+        for s in range(int(self.nCombs)):
+            for i,val in enumerate([x for x in itertools.chain(*itertools.combinations(range(self.step),self.k))]): #jet loop
                 nm[i+(s*self.ncr)][val+s*self.step]=1.0
         self.crmatrix = K.constant(nm)
         self.crmatrix = K.transpose(self.crmatrix)
@@ -229,7 +245,16 @@ class BuildSequentialCombinationsDim2(Layer):
         return K.dot(x,self.crmatrix)
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1],self.nCombs*self.ncr)
-
+    def get_config(self):
+        config = {
+            'k':self.k,
+            'step':self.step,
+    #        'nCombs':self.nCombs,
+    #        'ncr':self.ncr,
+    #        'crmatrix':self.crmatrix,
+        }
+        base_config = super(BuildSequentialCombinationsDim2, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
     
 class BuildSequentialCombinationsDim1():
     def __init__(self,input,k, step):
@@ -240,7 +265,12 @@ class BuildSequentialCombinationsDim1():
         self.perm2 = Permute((2,1))(self.comb)
     def get(self):
         return self.perm2
-
+    def get_config(self):
+        config = {
+            'k':self.k,
+        }
+        base_config = super(BuildSequentialCombinationsDim1, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
     
     
 class BuildCombinationsDim2AndSum(Layer):
@@ -251,7 +281,7 @@ class BuildCombinationsDim2AndSum(Layer):
         self.ncr = self.k*factorial(input_shape[2])/factorial(self.k)/factorial(input_shape[2]-self.k)
         self.crmatrix = K.ones(shape=(self.ncr,input_shape[2]))
         nm = np.zeros((self.ncr,input_shape[2]))
-        for i,val in enumerate([x for x in itertools.chain(*itertools.combinations(xrange(input_shape[2]),self.k))]): #jet loop
+        for i,val in enumerate([x for x in itertools.chain(*itertools.combinations(range(input_shape[2]),self.k))]): #jet loop
             nm[i][val]=1.0
         self.crmatrix = K.constant(nm)
         self.crmatrix = K.transpose(self.crmatrix)
@@ -262,7 +292,14 @@ class BuildCombinationsDim2AndSum(Layer):
         return p
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1], 1)
-
+    def get_config(self):
+        config = {
+            'k':self.k,
+    #        'ncr':self.ncr,
+    #        'crmatrix':self.crmatrix,
+        }
+        base_config = super(BuildCombinationsDim2AndSum, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
     
 class BuildCombinations4V():
     def __init__(self,input,k):
@@ -273,7 +310,12 @@ class BuildCombinations4V():
         self.perm2 = Permute((2,1))(self.comb)
     def get(self):
         return self.perm2
-
+    def get_config(self):
+        config = {
+           'k':self.k
+        }
+        base_config = super(BuildCombinations4V, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
 
     
 class GetPtEtaPhiMFrom4V(Layer): #operates over (None, 1, 4)
@@ -307,15 +349,24 @@ class GetPtEtaPhiMFrom4V(Layer): #operates over (None, 1, 4)
         thetaB=tf.where( K.less(pz,0.), K.minimum(theta, 179.999999) , K.maximum(theta, 0.000001) )
         eta= K.map_fn(lambda x: -tf.log(tf.tan(x/2.0)), thetaB)
         
-        rp=tf.div(px, p)
-        phi=tf.acos(rp) #0->pi
+        rp=tf.div(px, pT)
+        phi=tf.acos( K.maximum(K.minimum(rp,1.), -1.) ) #0->pi
         phi=tf.where(K.less(0.,py), phi, K.map_fn(lambda x: -x, phi) )
+        phi=tf.where(K.equal(0.,pT), pT, phi) #dummy way to put zero...
         
         return K.concatenate([pT, eta, phi, m])
         
     def compute_output_shape(self, input_shape):
         return (input_shape[0],1,4)
-
+    #def get_config(self):
+    #    config = {
+    #        'pxMask':self.pxMask,
+    #        'pyMask':self.pyMask,
+    #        'pzMask':self.pzMask,
+    #        'EMask':self.EMask,
+    #    }
+    #    base_config = super(GetPtEtaPhiMFrom4V, self).get_config()
+    #    return dict(list(base_config.items()) + list(config.items()))
 
 class GetPxPyPzEFrom4V(Layer): #operates over (None, 1, 4)
     def __init__(self, **kwargs):
@@ -337,7 +388,7 @@ class GetPxPyPzEFrom4V(Layer): #operates over (None, 1, 4)
 
         px=tf.multiply(pt, K.cos(phi) )
         py=tf.multiply(pt, K.sin(phi) )
-        pz=tf.multiply(p, K.cos(theta) )
+        pz=tf.multiply(-1., tf.multiply(p, K.cos(theta) ))
 
         p2=K.square(p)
         m2=K.square(m)
@@ -348,16 +399,44 @@ class GetPxPyPzEFrom4V(Layer): #operates over (None, 1, 4)
         
     def compute_output_shape(self, input_shape):
         return (input_shape[0],1,4)
-
+    #def get_config(self):
+    #    config = {
+    #        'ptMask':self.ptMask,
+    #        'etaMask':self.etaMask,
+    #        'phiMask':self.phiMask,
+    #        'mMask':self.mMask,
+    #    }
+    #    base_config = super(GetPxPyPzEFrom4V, self).get_config()
+    #    return dict(list(base_config.items()) + list(config.items()))
 
 
 class Sum4V(Layer):
     def __init__(self, **kwargs):
         super(Sum4V, self).__init__(**kwargs)
     def build(self, input_shape):
+        #shape input : (batch, nComb, nVect, 4 )
+        mask= np.zeros((1, input_shape[-2]) )
+        mask[0][-1]=1.
+        self.last4VMask = K.constant(mask)
+        multMask=np.full((1,4),1.)
+        self.multMask=K.constant(multMask)
+        
         super(Sum4V, self).build(input_shape)
     def call(self,x):
-        return K.sum(x, axis=2, keepdims=True) #along columns
+        shape=x.get_shape()
+
+        #check if the last 4vector is not null
+        last4V=K.dot(self.last4VMask,x)
+        last4V=tf.reshape(last4V, (-1, int(shape[1]), int(shape[3]) ) )
+        empty4VCond=K.sum(tf.abs(last4V), axis=2, keepdims=True )
+        empty4VCond=K.dot(empty4VCond, self.multMask)
+        empty4VCond=tf.reshape(empty4VCond, (-1, int(shape[1]), 1, int(shape[3]) ) )
+
+        theSum=K.sum(x, axis=2, keepdims=True)
+        zeroCopy=tf.zeros_like(theSum)
+        result=tf.where( K.equal(0.,empty4VCond), zeroCopy , theSum )
+        
+        return result #K.sum(x, axis=2, keepdims=True) #along columns
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1], 4)
 
@@ -365,27 +444,37 @@ class Sum4V(Layer):
 class SumCombinatorial4VBlocks():
     def __init__(self,input,k):
         self.input = input
-        nComb=self.input._keras_shape[1]/k
-        self.reshape1 = Reshape((nComb,k,4))(input)
+        self.nComb=int(self.input._keras_shape[1]/k)
+        self.reshape1 = Reshape((self.nComb,k,4))(input)
         self.sum = Sum4V()(self.reshape1)
-        self.reshape2 = Reshape((nComb,4))(self.sum)
+        self.reshape2 = Reshape((self.nComb,4))(self.sum)
     def get(self):
         return self.reshape2
-    
+    #def get_config(self):
+    #    config = {'nCombs':self.nCombs,
+    #    }
+    #    base_config = super(SumCombinatorial4VBlocks, self).get_config()
+    #    return dict(list(base_config.items()) + list(config.items()))
 
 class Convert4VBlocks():
     def __init__(self,input, cartToPEPM=True):
+        self.cartToPEPM=cartToPEPM
         self.input = input
-        nObj=input._keras_shape[1]
+        nObj=int(input._keras_shape[1])
         self.reshape1 = Reshape((nObj,1,4))(input)
-        if cartToPEPM:
+        if self.cartToPEPM:
             self.conv = TimeDistributed(GetPtEtaPhiMFrom4V())(self.reshape1)
         else:
             self.conv = TimeDistributed(GetPxPyPzEFrom4V())(self.reshape1)
         self.reshape2 = Reshape((nObj,4))(self.conv)
+        #super(Convert4VBlocks,self).__init__(**kwargs)
     def get(self):
         return self.reshape2
-
+    def get_config(self):
+        config = {'cartToPEPM':self.cartToPEPM,
+        }
+        base_config = super(SumCombinatorial4VBlocks, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
 
 class DeltaR(Layer):
     #operates over (None, nObjs, 4)
@@ -397,7 +486,7 @@ class DeltaR(Layer):
         self.phiMask = K.constant([[0],[0],[1],[0]])
         self.v1Mask=K.constant([[1],[0]])
         self.v2Mask=K.constant([[0],[1]])
-        self.nCombs=input_shape[1]/2
+        self.nCombs=int(input_shape[1]/2)
         super(DeltaR, self).build(input_shape)
     def call(self,x):
         vals=tf.reshape(x,(-1,self.nCombs,2,4))
@@ -431,7 +520,15 @@ class DeltaR(Layer):
         
     def compute_output_shape(self, input_shape):
         return (input_shape[0],self.nCombs,1)
-
+    #def get_config(self):
+    #    config = {'etaMask':self.etaMask,
+    #              'phiMask':self.phiMask,
+    #              'v1Mask':self.v1Mask,
+    #              'v2Mask':self.v2Mask,
+    #              'nCombs':self.nCombs
+    #    }
+    #    base_config = super(DeltaR, self).get_config()
+    #    return dict(list(base_config.items()) + list(config.items()))
 
 ### basic operation functions ===============    
 #replaced by GlobalXXXPooling1D
@@ -475,17 +572,18 @@ class DeltaR(Layer):
 
 class SequentialReduceOperation(Layer):# input shape (None, nObjs, nVars)
     def __init__(self, operation, k, **kwargs):
+        self.operation=operation
         self.op=0 if operation=="+" else ( 1 if operation=="avg" else ( 2 if operation=="max" else ( 3 if operation=="min" else ( 4 if operation=="-" else ( 5 if operation=="-abs" else -1 ) ) ) ) )
         if self.op==-1:
-            print "Error, sequential reducive operation not defined!"
+            print("Error, sequential reducive operation not defined!")
             sys.exit(0)
         self.k=k
         super(SequentialReduceOperation, self).__init__(**kwargs)
     def build(self, input_shape):
-        self.deep=input_shape[2]
-        self.step=input_shape[1]/self.k
+        self.deep=int(input_shape[2])
+        self.step=int(input_shape[1]/self.k)
         if input_shape[1]%self.k!=0:
-            print "Error, sequential reducive operation with mismatching number of pairs"
+            print("Error, sequential reducive operation with mismatching number of pairs")
             sys.exit(0)
         tmpX=np.zeros((self.k,1))
         tmpY=np.full((self.k,1),1)
@@ -520,7 +618,16 @@ class SequentialReduceOperation(Layer):# input shape (None, nObjs, nVars)
     
     def compute_output_shape(self, input_shape):
         return (input_shape[0],self.step,input_shape[2])
-
+    def get_config(self):
+        config = {'k':self.k,
+                  'operation':self.operation,
+    #              'deep':self.deep,
+    #              'step':self.step,
+    #              'xMask':self.xMask,
+    #              'yMask':self.yMask
+        }
+        base_config = super(SequentialReduceOperation, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
     
 class SubtractElement(Layer):  #input shape (None, 2, nVars)
     def __init__(self, **kwargs):
@@ -543,12 +650,17 @@ class SubtractElement(Layer):  #input shape (None, 2, nVars)
     
     def compute_output_shape(self, input_shape):
         return (input_shape[0],1,input_shape[2])
-    
+    #def get_config(self):
+    #    config = {'xMask':self.xMask,
+    #              'yMask':self.yMask}
+    #    base_config = super(SubtractElement, self).get_config()
+    #    return dict(list(base_config.items()) + list(config.items()))
 
 class Sort(Layer): #input shape (None, nObjs, nVars)
-    def __init__(self, colIdx, reverse=False, sortByClosestValue=False, target=None,  **kwargs): #colIdx: column index used for ordering. if reverse, from smaller to larger value
+    def __init__(self, colIdx, reverse=False, sortByClosestValue=False, target=None, discardZeros=False,  **kwargs): #colIdx: column index used for ordering. if reverse, from smaller to larger value
         self.nc=colIdx
         self.sortByClosestValue=sortByClosestValue
+        self.discardZeros=discardZeros
         self.target=target
         self.reverse=reverse
         super(Sort, self).__init__(**kwargs)
@@ -558,22 +670,30 @@ class Sort(Layer): #input shape (None, nObjs, nVars)
             tmp=np.zeros((input_shape[2],1))
             tmp[self.nc][0]=1
             self.mask=K.constant(tmp)
+        self.zeroMask=None
         super(Sort, self).build(input_shape)
 
     def call(self,x):    
         shape=x._keras_shape
 
+        x2=None
+        if self.discardZeros:
+            self.zeroMask=tf.fill( tf.shape(x), 100000000000. )
+            x2=tf.where( K.equal(0.,x), self.zeroMask , x )
+        else:
+            x2=x
+        
         idxs=None
         if not self.sortByClosestValue:
-            idxs=tf.nn.top_k(x[:,:,self.nc], k=shape[-2]).indices
+            idxs=tf.nn.top_k(x2[:,:,self.nc], k=shape[-2]).indices
             idxs=tf.reshape(idxs, (-1, shape[1]) )
         else:
-            tmp=K.dot(x,self.mask)
+            tmp=K.dot(x2,self.mask)
             tmp=K.map_fn(lambda e: -1*abs(e-self.target), tmp)
             idxs=tf.nn.top_k(tmp[:,:,0], k=shape[-2]).indices
             idxs=tf.reshape(idxs, (-1, shape[1]) )
                     
-        b_idxs=tf.scan(lambda a,x: a+1, idxs, np.array([-1]*shape[1]) )
+        b_idxs=tf.scan(lambda a,x2: a+1, idxs, np.array([-1]*shape[1]) )
         b_idxs=tf.to_int32(b_idxs)
         
         idxs=tf.stack([b_idxs,idxs],1)
@@ -585,51 +705,68 @@ class Sort(Layer): #input shape (None, nObjs, nVars)
     
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1],input_shape[2])
-
+    def get_config(self):
+        config = {'colIdx':self.nc,
+                  'sortByClosestValue':self.sortByClosestValue,
+                  'target':self.target,
+                  'discardZeros':self.discardZeros,
+                  'reverse':self.reverse,
+    #              'mask':self.mask
+        }
+        base_config = super(Sort, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
 
 class SequentialSort(Layer):# input shape (None, nObjs, nVars)
-    def __init__(self, k, colIdx, reverse=False, sortByClosestValue=False, target=None, **kwargs):
+    def __init__(self, k, colIdx, reverse=False, sortByClosestValue=False, target=None, discardZeros=False, **kwargs):
         self.k=k
         self.nc=colIdx
         self.sortByClosestValue=sortByClosestValue
         self.target=target
         self.reverse=reverse
+        self.discardZeros=discardZeros
         super(SequentialSort, self).__init__(**kwargs)
     def build(self, input_shape):
-        self.deep=input_shape[2]
-        self.step=input_shape[1]/self.k
+        self.deep=int(input_shape[2])
+        self.step=int(input_shape[1]/self.k)
         if input_shape[1]%self.k!=0:
-            print "Error, sequential sort with mismatching number of pairs"
+            print("Error, sequential sort with mismatching number of pairs")
             sys.exit(0)
         tmpOffsets=np.zeros((input_shape[1]))
-        for i in range(input_shape[1]):
+        for i in range(int(input_shape[1])):
             tmpOffsets[i]=(int(i/self.k))*self.k
         self.offsets=tf.to_int32(K.constant(tmpOffsets))      
         self.mask=None
         if self.sortByClosestValue:
-            tmp=np.zeros((input_shape[2],1))
-            tmp[self.nc][0]=1
-            self.mask=K.constant(tmp)
+                  tmp=np.zeros((input_shape[2],1))
+                  tmp[self.nc][0]=1
+                  self.mask=K.constant(tmp)
         super(SequentialSort, self).build(input_shape)
     def call(self,x):
         shape=x._keras_shape
         vals=tf.reshape(x,(-1,self.step,self.k, self.deep))
+
+        vals2=None
+        if self.discardZeros:
+            self.zeroMask=tf.fill( tf.shape(vals), 100000000000. )
+            vals2=tf.where( K.equal(0.,vals), self.zeroMask , vals )
+        else:
+            vals2=vals
         idxs=None
         if not self.sortByClosestValue:
-            idxs=tf.nn.top_k(vals[:,:,:,self.nc], k=self.k).indices
+            idxs=tf.nn.top_k(vals2[:,:,:,self.nc], k=self.k).indices
             if self.reverse:
                 idxs=tf.reverse(idxs,[2])
-            idxs=tf.reshape(idxs, (-1, shape[1]) )
+            idxs=tf.reshape(idxs, (-1, int(shape[1]) ) )
         else:
-            tmp=K.dot(vals,self.mask)
+            tmp=K.dot(vals2,self.mask)
             tmp=K.map_fn(lambda e: -1*abs(e-self.target), tmp)
             idxs=tf.nn.top_k(tmp[:,:,:,0], k=self.k).indices
             if self.reverse:
                 idxs=tf.reverse(idxs,[2])
-            idxs=tf.reshape(idxs, (-1, shape[1]) )
+            idxs=tf.reshape(idxs, (-1, int(shape[1]) ) )
 
         idxs=tf.add(idxs,self.offsets)
-        b_idxs=tf.scan(lambda a,x: a+1, idxs, np.array([-1]*shape[1]) )
+        b_idxs=tf.scan(lambda a,x: a+1, idxs, np.array([-1]*int(shape[1]) ) )
         b_idxs=tf.to_int32(b_idxs)
         idxs=tf.stack([b_idxs,idxs],1)
         idxs=tf.transpose(idxs,perm=[0,2,1])
@@ -638,4 +775,37 @@ class SequentialSort(Layer):# input shape (None, nObjs, nVars)
 
     def compute_output_shape(self, input_shape):
         return (input_shape[0],input_shape[1],input_shape[2])
+    def get_config(self):
+        config = {'k':self.k,
+                  'colIdx':self.nc,
+                  'sortByClosestValue':self.sortByClosestValue,
+                  'target':self.target,
+                  'reverse':self.reverse,
+                  'discardZeros':self.discardZeros
+    #              'deep':self.deep,
+    #              'step':self.step,
+    #              'offsets':self.offsets,
+    #              'mask':self.mask
+        }
+        base_config = super(SequentialSort, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
 
+
+
+superLayers={"BuildCombinationsDim2":BuildCombinationsDim2, 
+             "BuildCombinationsDim1":BuildCombinationsDim1,
+             "BuildSequentialCombinationsDim2":BuildSequentialCombinationsDim2,
+             "BuildSequentialCombinationsDim1":BuildSequentialCombinationsDim1,
+             "BuildCombinationsDim2AndSum":BuildCombinationsDim2AndSum,
+             "BuildCombinations4V":BuildCombinations4V,
+             "GetPtEtaPhiMFrom4V":GetPtEtaPhiMFrom4V,
+             "GetPxPyPzEFrom4V":GetPxPyPzEFrom4V,
+             "Sum4V":Sum4V,
+             "SumCombinatorial4VBlocks":SumCombinatorial4VBlocks,
+             "Convert4VBlocks":Convert4VBlocks,
+             "DeltaR":DeltaR,
+             "SequentialReduceOperation":SequentialReduceOperation,
+             "SubtractElement":SubtractElement,
+             "Sort":Sort,
+             "SequentialSort":SequentialSort
+}
